@@ -25,20 +25,21 @@ type LeverageConfig struct {
 
 // ConfigFile 配置文件结构，只包含需要同步到数据库的字段
 type ConfigFile struct {
-	AdminMode          bool              `json:"admin_mode"`
-	BetaMode           bool              `json:"beta_mode"`
-	APIServerPort      int               `json:"api_server_port"`
-	UseDefaultCoins    bool              `json:"use_default_coins"`
-	DefaultCoins       []string          `json:"default_coins"`
-	CoinPoolAPIURL     string            `json:"coin_pool_api_url"`
-	OITopAPIURL        string            `json:"oi_top_api_url"`
-	MaxDailyLoss       float64           `json:"max_daily_loss"`
-	MaxDrawdown        float64           `json:"max_drawdown"`
-	StopTradingMinutes int               `json:"stop_trading_minutes"`
-	Leverage           LeverageConfig    `json:"leverage"`
-	JWTSecret          string            `json:"jwt_secret"`
-	DataKLineTime      string            `json:"data_k_line_time"`
-	Log                *config.LogConfig `json:"log"` // 日志配置
+	AdminMode          bool                `json:"admin_mode"`
+	BetaMode           bool                `json:"beta_mode"`
+	APIServerPort      int                 `json:"api_server_port"`
+	UseDefaultCoins    bool                `json:"use_default_coins"`
+	DefaultCoins       []string            `json:"default_coins"`
+	CoinPoolAPIURL     string              `json:"coin_pool_api_url"`
+	OITopAPIURL        string              `json:"oi_top_api_url"`
+	MaxDailyLoss       float64             `json:"max_daily_loss"`
+	MaxDrawdown        float64             `json:"max_drawdown"`
+	StopTradingMinutes int                 `json:"stop_trading_minutes"`
+	Leverage           LeverageConfig      `json:"leverage"`
+	JWTSecret          string              `json:"jwt_secret"`
+	DataKLineTime      string              `json:"data_k_line_time"`
+	Log                *config.LogConfig   `json:"log"` // 日志配置
+	News               []config.NewsConfig `json:"news"`
 }
 
 // loadConfigFile 读取并解析config.json文件
@@ -104,6 +105,14 @@ func syncConfigToDatabase(database *config.Database, configFile *ConfigFile) err
 	// 如果JWT密钥不为空，也同步
 	if configFile.JWTSecret != "" {
 		configs["jwt_secret"] = configFile.JWTSecret
+	}
+
+	// 新闻配置
+	if len(configFile.News) != 0 {
+		newsJSON, err := json.Marshal(configFile.News)
+		if err == nil {
+			configs["news_config"] = string(newsJSON)
+		}
 	}
 
 	// 更新数据库配置
