@@ -21,7 +21,7 @@ type AutoTraderConfig struct {
 	AIModel string // AI模型: "qwen" 或 "deepseek"
 
 	// 交易平台选择
-	Exchange string // "binance", "hyperliquid" 或 "aster"
+	Exchange string // "binance", "hyperliquid", "lighter" 或 "aster"
 
 	// 币安API配置
 	BinanceAPIKey    string
@@ -31,6 +31,13 @@ type AutoTraderConfig struct {
 	HyperliquidPrivateKey string
 	HyperliquidWalletAddr string
 	HyperliquidTestnet    bool
+
+	// Lighter配置
+	LighterEndpoint   string // API端点
+	LighterAPIKeyPriv string // API密钥私钥(hex)
+	LighterAccountIdx int64  // 账户索引
+	LighterAPIKeyIdx  uint8  // API密钥索引
+	LighterChainID    uint32 // 链ID (testnet=1 mainnet=2)
 
 	// Aster配置
 	AsterUser       string // Aster主钱包地址
@@ -172,6 +179,19 @@ func NewAutoTrader(config AutoTraderConfig) (*AutoTrader, error) {
 		trader, err = NewHyperliquidTrader(config.HyperliquidPrivateKey, config.HyperliquidWalletAddr, config.HyperliquidTestnet)
 		if err != nil {
 			return nil, fmt.Errorf("初始化Hyperliquid交易器失败: %w", err)
+		}
+	case "lighter":
+		log.Printf("🏦 [%s] 使用Lighter交易", config.Name)
+		lighterConfig := LighterConfig{
+			Endpoint:      config.LighterEndpoint,
+			APIKeyPrivKey: config.LighterAPIKeyPriv,
+			AccountIndex:  config.LighterAccountIdx,
+			APIKeyIndex:   config.LighterAPIKeyIdx,
+			ChainID:       config.LighterChainID,
+		}
+		trader, err = NewLighterTrader(lighterConfig)
+		if err != nil {
+			return nil, fmt.Errorf("初始化Lighter交易器失败: %w", err)
 		}
 	case "aster":
 		log.Printf("🏦 [%s] 使用Aster交易", config.Name)

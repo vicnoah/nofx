@@ -67,6 +67,11 @@ func (d *Database) createTables() error {
 			testnet BOOLEAN DEFAULT 0,
 			-- Hyperliquid 特定字段
 			hyperliquid_wallet_addr TEXT DEFAULT '',
+			-- Lighter 特定字段
+			lighter_endpoint TEXT DEFAULT '',
+			lighter_account_idx INTEGER DEFAULT 0,
+			lighter_api_key_idx INTEGER DEFAULT 0,
+			lighter_chain_id INTEGER DEFAULT 0,
 			-- Aster 特定字段
 			aster_user TEXT DEFAULT '',
 			aster_signer TEXT DEFAULT '',
@@ -175,6 +180,10 @@ func (d *Database) createTables() error {
 	// 为现有数据库添加新字段（向后兼容）
 	alterQueries := []string{
 		`ALTER TABLE exchanges ADD COLUMN hyperliquid_wallet_addr TEXT DEFAULT ''`,
+		`ALTER TABLE exchanges ADD COLUMN lighter_endpoint TEXT DEFAULT ''`,
+		`ALTER TABLE exchanges ADD COLUMN lighter_account_idx INTEGER DEFAULT 0`,
+		`ALTER TABLE exchanges ADD COLUMN lighter_api_key_idx INTEGER DEFAULT 0`,
+		`ALTER TABLE exchanges ADD COLUMN lighter_chain_id INTEGER DEFAULT 0`,
 		`ALTER TABLE exchanges ADD COLUMN aster_user TEXT DEFAULT ''`,
 		`ALTER TABLE exchanges ADD COLUMN aster_signer TEXT DEFAULT ''`,
 		`ALTER TABLE exchanges ADD COLUMN aster_private_key TEXT DEFAULT ''`,
@@ -393,6 +402,11 @@ type ExchangeConfig struct {
 	Testnet   bool   `json:"testnet"`
 	// Hyperliquid 特定字段
 	HyperliquidWalletAddr string `json:"hyperliquidWalletAddr"`
+	// Lighter 特定字段
+	LighterEndpoint   string `json:"lighterEndpoint"`
+	LighterAccountIdx int64  `json:"lighterAccountIdx"`
+	LighterAPIKeyIdx  uint8  `json:"lighterAPIKeyIdx"`
+	LighterChainID    uint32 `json:"lighterChainID"`
 	// Aster 特定字段
 	AsterUser       string    `json:"asterUser"`
 	AsterSigner     string    `json:"asterSigner"`
@@ -721,6 +735,9 @@ func (d *Database) UpdateExchange(userID, id string, enabled bool, apiKey, secre
 			typ = "cex"
 		} else if id == "hyperliquid" {
 			name = "Hyperliquid"
+			typ = "dex"
+		} else if id == "lighter" {
+			name = "Lighter"
 			typ = "dex"
 		} else if id == "aster" {
 			name = "Aster DEX"

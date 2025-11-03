@@ -235,6 +235,12 @@ func (tm *TraderManager) addTraderFromDB(traderCfg *config.TraderRecord, aiModel
 	} else if exchangeCfg.ID == "hyperliquid" {
 		traderConfig.HyperliquidPrivateKey = exchangeCfg.APIKey // hyperliquid用APIKey存储private key
 		traderConfig.HyperliquidWalletAddr = exchangeCfg.HyperliquidWalletAddr
+	} else if exchangeCfg.ID == "lighter" {
+		traderConfig.LighterEndpoint = exchangeCfg.LighterEndpoint
+		traderConfig.LighterAPIKeyPriv = exchangeCfg.APIKey // lighter用APIKey存储API密钥私钥
+		traderConfig.LighterAccountIdx = exchangeCfg.LighterAccountIdx
+		traderConfig.LighterAPIKeyIdx = exchangeCfg.LighterAPIKeyIdx
+		traderConfig.LighterChainID = exchangeCfg.LighterChainID
 	} else if exchangeCfg.ID == "aster" {
 		traderConfig.AsterUser = exchangeCfg.AsterUser
 		traderConfig.AsterSigner = exchangeCfg.AsterSigner
@@ -341,6 +347,12 @@ func (tm *TraderManager) AddTraderFromDB(traderCfg *config.TraderRecord, aiModel
 	} else if exchangeCfg.ID == "hyperliquid" {
 		traderConfig.HyperliquidPrivateKey = exchangeCfg.APIKey // hyperliquid用APIKey存储private key
 		traderConfig.HyperliquidWalletAddr = exchangeCfg.HyperliquidWalletAddr
+	} else if exchangeCfg.ID == "lighter" {
+		traderConfig.LighterEndpoint = exchangeCfg.LighterEndpoint
+		traderConfig.LighterAPIKeyPriv = exchangeCfg.APIKey // lighter用APIKey存储API密钥私钥
+		traderConfig.LighterAccountIdx = exchangeCfg.LighterAccountIdx
+		traderConfig.LighterAPIKeyIdx = exchangeCfg.LighterAPIKeyIdx
+		traderConfig.LighterChainID = exchangeCfg.LighterChainID
 	} else if exchangeCfg.ID == "aster" {
 		traderConfig.AsterUser = exchangeCfg.AsterUser
 		traderConfig.AsterSigner = exchangeCfg.AsterSigner
@@ -751,6 +763,12 @@ func (tm *TraderManager) loadSingleTrader(traderCfg *config.TraderRecord, aiMode
 	} else if exchangeCfg.ID == "hyperliquid" {
 		traderConfig.HyperliquidPrivateKey = exchangeCfg.APIKey // hyperliquid用APIKey存储private key
 		traderConfig.HyperliquidWalletAddr = exchangeCfg.HyperliquidWalletAddr
+	} else if exchangeCfg.ID == "lighter" {
+		traderConfig.LighterEndpoint = exchangeCfg.LighterEndpoint
+		traderConfig.LighterAPIKeyPriv = exchangeCfg.APIKey // lighter用APIKey存储API密钥私钥
+		traderConfig.LighterAccountIdx = exchangeCfg.LighterAccountIdx
+		traderConfig.LighterAPIKeyIdx = exchangeCfg.LighterAPIKeyIdx
+		traderConfig.LighterChainID = exchangeCfg.LighterChainID
 	} else if exchangeCfg.ID == "aster" {
 		traderConfig.AsterUser = exchangeCfg.AsterUser
 		traderConfig.AsterSigner = exchangeCfg.AsterSigner

@@ -15,7 +15,7 @@ type TraderConfig struct {
 	AIModel string `json:"ai_model"` // "qwen" or "deepseek"
 
 	// 交易平台选择（二选一）
-	Exchange string `json:"exchange"` // "binance" or "hyperliquid"
+	Exchange string `json:"exchange"` // "binance", "hyperliquid", "lighter", or "aster"
 
 	// 币安配置
 	BinanceAPIKey    string `json:"binance_api_key,omitempty"`
@@ -25,6 +25,13 @@ type TraderConfig struct {
 	HyperliquidPrivateKey string `json:"hyperliquid_private_key,omitempty"`
 	HyperliquidWalletAddr string `json:"hyperliquid_wallet_addr,omitempty"`
 	HyperliquidTestnet    bool   `json:"hyperliquid_testnet,omitempty"`
+
+	// Lighter配置
+	LighterEndpoint    string `json:"lighter_endpoint,omitempty"`     // API端点
+	LighterAPIKeyPriv  string `json:"lighter_api_key_priv,omitempty"` // API密钥私钥(hex)
+	LighterAccountIdx  int64  `json:"lighter_account_idx,omitempty"`  // 账户索引
+	LighterAPIKeyIdx   uint8  `json:"lighter_api_key_idx,omitempty"`  // API密钥索引
+	LighterChainID     uint32 `json:"lighter_chain_id,omitempty"`     // 链ID (testnet=1 mainnet=2)
 
 	// Aster配置
 	AsterUser       string `json:"aster_user,omitempty"`        // Aster主钱包地址
@@ -128,8 +135,8 @@ func (c *Config) Validate() error {
 		if trader.Exchange == "" {
 			trader.Exchange = "binance" // 默认使用币安
 		}
-		if trader.Exchange != "binance" && trader.Exchange != "hyperliquid" && trader.Exchange != "aster" {
-			return fmt.Errorf("trader[%d]: exchange必须是 'binance', 'hyperliquid' 或 'aster'", i)
+		if trader.Exchange != "binance" && trader.Exchange != "hyperliquid" && trader.Exchange != "lighter" && trader.Exchange != "aster" {
+			return fmt.Errorf("trader[%d]: exchange必须是 'binance', 'hyperliquid', 'lighter' 或 'aster'", i)
 		}
 
 		// 根据平台验证对应的密钥
@@ -140,6 +147,16 @@ func (c *Config) Validate() error {
 		} else if trader.Exchange == "hyperliquid" {
 			if trader.HyperliquidPrivateKey == "" {
 				return fmt.Errorf("trader[%d]: 使用Hyperliquid时必须配置hyperliquid_private_key", i)
+			}
+		} else if trader.Exchange == "lighter" {
+			if trader.LighterEndpoint == "" {
+				return fmt.Errorf("trader[%d]: 使用Lighter时必须配置lighter_endpoint", i)
+			}
+			if trader.LighterAPIKeyPriv == "" {
+				return fmt.Errorf("trader[%d]: 使用Lighter时必须配置lighter_api_key_priv", i)
+			}
+			if trader.LighterChainID == 0 {
+				return fmt.Errorf("trader[%d]: 使用Lighter时必须配置lighter_chain_id (testnet=1, mainnet=2)", i)
 			}
 		} else if trader.Exchange == "aster" {
 			if trader.AsterUser == "" || trader.AsterSigner == "" || trader.AsterPrivateKey == "" {
