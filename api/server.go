@@ -17,6 +17,21 @@ import (
 	"github.com/google/uuid"
 )
 
+// maskSensitiveData 对敏感数据进行脱敏处理
+func maskSensitiveData(data string) string {
+	if data == "" {
+		return ""
+	}
+
+	// 如果数据长度 <= 8，全部打码
+	if len(data) <= 8 {
+		return "****"
+	}
+
+	// 显示前4位和后4位，中间用****替换
+	return data[:4] + "****" + data[len(data)-4:]
+}
+
 // Server HTTP API服务器
 type Server struct {
 	router        *gin.Engine
@@ -107,11 +122,11 @@ func (s *Server) setupRoutes() {
 
 			// AI模型配置
 			protected.GET("/models", s.handleGetModelConfigs)
-			protected.PUT("/models", s.handleUpdateModelConfigs)
+			protected.PUT("/models/:id", s.handleUpdateModelConfigByID)
 
 			// 交易所配置
 			protected.GET("/exchanges", s.handleGetExchangeConfigs)
-			protected.PUT("/exchanges", s.handleUpdateExchangeConfigs)
+			protected.PUT("/exchanges/:id", s.handleUpdateExchangeConfigByID)
 
 			// 用户信号源配置
 			protected.GET("/user/signal-sources", s.handleGetUserSignalSource)
@@ -635,58 +650,98 @@ func (s *Server) handleGetModelConfigs(c *gin.Context) {
 	}
 	log.Printf("✅ 找到 %d 个AI模型配置", len(models))
 
-	c.JSON(http.StatusOK, models)
-}
-
-// handleUpdateModelConfigs 更新AI模型配置
-func (s *Server) handleUpdateModelConfigs(c *gin.Context) {
-	userID := c.GetString("user_id")
-
-	// 先读取原始请求体
-	type EncryptedRequest struct {
-		Data      string `json:"data"`      // RSA加密后的数据（或原始JSON字符串）
-		Encrypted bool   `json:"encrypted"` // 是否加密
+	// 对敏感字段进行脱敏处理
+	safeModels := make([]map[string]interface{}, 0, len(models))
+	for _, model := range models {
+		safeModel := map[string]interface{}{
+			"id":                model.ID,
+			"user_id":           model.UserID,
+			"name":              model.Name,
+			"provider":          model.Provider,
+			"enabled":           model.Enabled,
+			"apiKey":            maskSensitiveData(model.APIKey),
+			"customApiUrl":      model.CustomAPIURL,
+			"customModelName":   model.CustomModelName,
+			"created_at":        model.CreatedAt,
+			"updated_at":        model.UpdatedAt,
+		}
+		safeModels = append(safeModels, safeModel)
 	}
 
+	c.JSON(http.StatusOK, safeModels)
+}
+
+// handleUpdateModelConfigByID 按ID更新单个AI模型配置（加密，三态语义）
+func (s *Server) handleUpdateModelConfigByID(c *gin.Context) {
+	userID := c.GetString("user_id")
+	modelID := c.Param("id")
+
+	type EncryptedRequest struct {
+		Data string `json:"data" binding:"required"`
+	}
 	var encReq EncryptedRequest
 	if err := c.ShouldBindJSON(&encReq); err != nil {
-		// 如果无法解析为加密格式，尝试直接解析为非加密请求（向后兼容）
-		var req UpdateModelConfigRequest
-		if err2 := c.ShouldBindJSON(&req); err2 != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err2.Error()})
-			return
-		}
-		// 直接处理非加密请求
-		s.processModelUpdate(c, userID, &req)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式错误，必须使用加密数据"})
 		return
 	}
 
-	// 如果标记为加密，先解密
-	var req UpdateModelConfigRequest
-	if encReq.Encrypted {
-		// 使用RSA解密
-		decryptedJSON, err := s.database.DecryptRSAData(encReq.Data)
-		if err != nil {
-			log.Printf("❌ 解密AI模型配置失败: %v", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "解密请求数据失败"})
-			return
-		}
+	decryptedJSON, err := s.database.DecryptRSAData(encReq.Data)
+	if err != nil {
+		log.Printf("❌ 解密AI模型配置失败: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "解密请求数据失败"})
+		return
+	}
 
-		// 解析JSON
-		if err := json.Unmarshal([]byte(decryptedJSON), &req); err != nil {
-			log.Printf("❌ 解析解密后的JSON失败: %v", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "解析请求数据失败"})
-			return
-		}
-	} else {
-		// 未加密，直接解析data字段
-		if err := json.Unmarshal([]byte(encReq.Data), &req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(decryptedJSON), &fields); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "解析请求数据失败"})
+		return
+	}
+
+	// 获取旧值
+	existing, _ := s.database.GetAIModels(userID)
+	var oldEnabled bool
+	var oldAPIKey, oldURL, oldName string
+	for _, m := range existing {
+		if m.ID == modelID {
+			oldEnabled = m.Enabled
+			oldAPIKey = m.APIKey
+			oldURL = m.CustomAPIURL
+			oldName = m.CustomModelName
+			break
 		}
 	}
 
-	s.processModelUpdate(c, userID, &req)
+	triString := func(key, old string) string {
+		v, present := fields[key]
+		if !present { return old }
+		if string(v) == "null" { return "" }
+		var sVal string
+		if json.Unmarshal(v, &sVal) == nil { return sVal }
+		return old
+	}
+	triBool := func(key string, old bool) bool {
+		v, present := fields[key]
+		if !present { return old }
+		var bVal bool
+		if json.Unmarshal(v, &bVal) == nil { return bVal }
+		return old
+	}
+
+	newEnabled := triBool("enabled", oldEnabled)
+	newAPIKey := triString("api_key", oldAPIKey)
+	newURL := triString("custom_api_url", oldURL)
+	newName := triString("custom_model_name", oldName)
+
+	if err := s.database.UpdateAIModel(userID, modelID, newEnabled, newAPIKey, newURL, newName); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("更新模型 %s 失败: %v", modelID, err)})
+		return
+	}
+
+	if err := s.traderManager.LoadUserTraders(s.database, userID); err != nil {
+		log.Printf("⚠️ 重新加载用户交易员到内存失败: %v", err)
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "模型配置已更新", "id": modelID})
 }
 
 // processModelUpdate 处理AI模型配置更新
@@ -723,58 +778,144 @@ func (s *Server) handleGetExchangeConfigs(c *gin.Context) {
 	}
 	log.Printf("✅ 找到 %d 个交易所配置", len(exchanges))
 
-	c.JSON(http.StatusOK, exchanges)
+	// 对敏感字段进行脱敏处理
+	safeExchanges := make([]map[string]interface{}, 0, len(exchanges))
+	for _, exchange := range exchanges {
+		safeExchange := map[string]interface{}{
+			"id":                     exchange.ID,
+			"user_id":                exchange.UserID,
+			"name":                   exchange.Name,
+			"type":                   exchange.Type,
+			"enabled":                exchange.Enabled,
+			"apiKey":                 maskSensitiveData(exchange.APIKey),
+			"secretKey":              maskSensitiveData(exchange.SecretKey),
+			"testnet":                exchange.Testnet,
+			"hyperliquidWalletAddr":  maskSensitiveData(exchange.HyperliquidWalletAddr),
+			"asterUser":              exchange.AsterUser,
+			"asterSigner":            maskSensitiveData(exchange.AsterSigner),
+			"asterPrivateKey":        maskSensitiveData(exchange.AsterPrivateKey),
+			"created_at":             exchange.CreatedAt,
+			"updated_at":             exchange.UpdatedAt,
+		}
+		safeExchanges = append(safeExchanges, safeExchange)
+	}
+
+	c.JSON(http.StatusOK, safeExchanges)
 }
 
 // handleUpdateExchangeConfigs 更新交易所配置
 func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 	userID := c.GetString("user_id")
 
-	// 先读取原始请求体
+	// 先读取原始请求体（必须是加密数据）
 	type EncryptedRequest struct {
-		Data      string `json:"data"`      // RSA加密后的数据（或原始JSON字符串）
-		Encrypted bool   `json:"encrypted"` // 是否加密
+		Data string `json:"data" binding:"required"` // RSA+AES混合加密后的数据
 	}
 
 	var encReq EncryptedRequest
 	if err := c.ShouldBindJSON(&encReq); err != nil {
-		// 如果无法解析为加密格式，尝试直接解析为非加密请求（向后兼容）
-		var req UpdateExchangeConfigRequest
-		if err2 := c.ShouldBindJSON(&req); err2 != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err2.Error()})
-			return
-		}
-		// 直接处理非加密请求
-		s.processExchangeUpdate(c, userID, &req)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式错误，必须使用加密数据"})
 		return
 	}
 
-	// 如果标记为加密，先解密
+	// 使用智能解密（自动识别纯RSA或混合加密）
 	var req UpdateExchangeConfigRequest
-	if encReq.Encrypted {
-		// 使用RSA解密
-		decryptedJSON, err := s.database.DecryptRSAData(encReq.Data)
-		if err != nil {
-			log.Printf("❌ 解密交易所配置失败: %v", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "解密请求数据失败"})
-			return
-		}
+	decryptedJSON, err := s.database.DecryptRSAData(encReq.Data)
+	if err != nil {
+		log.Printf("❌ 解密交易所配置失败: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "解密请求数据失败"})
+		return
+	}
 
-		// 解析JSON
-		if err := json.Unmarshal([]byte(decryptedJSON), &req); err != nil {
-			log.Printf("❌ 解析解密后的JSON失败: %v", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "解析请求数据失败"})
-			return
-		}
-	} else {
-		// 未加密，直接解析data字段
-		if err := json.Unmarshal([]byte(encReq.Data), &req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
+	// 解析JSON
+	if err := json.Unmarshal([]byte(decryptedJSON), &req); err != nil {
+		log.Printf("❌ 解析解密后的JSON失败: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "解析请求数据失败"})
+		return
 	}
 
 	s.processExchangeUpdate(c, userID, &req)
+}
+
+// handleUpdateExchangeConfigByID 按ID更新单个交易所配置（加密，三态语义）
+func (s *Server) handleUpdateExchangeConfigByID(c *gin.Context) {
+	userID := c.GetString("user_id")
+	exchangeID := c.Param("id")
+
+	type EncryptedRequest struct {
+		Data string `json:"data" binding:"required"`
+	}
+	var encReq EncryptedRequest
+	if err := c.ShouldBindJSON(&encReq); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式错误，必须使用加密数据"})
+		return
+	}
+
+	decryptedJSON, err := s.database.DecryptRSAData(encReq.Data)
+	if err != nil {
+		log.Printf("❌ 解密交易所配置失败: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "解密请求数据失败"})
+		return
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(decryptedJSON), &fields); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "解析请求数据失败"})
+		return
+	}
+
+	// 获取旧值
+	existing, _ := s.database.GetExchanges(userID)
+	var oldEnabled, oldTestnet bool
+	var oldAPIKey, oldSecret, oldWallet, oldAUser, oldASigner, oldAPriv string
+	for _, e := range existing {
+		if e.ID == exchangeID {
+			oldEnabled = e.Enabled
+			oldTestnet = e.Testnet
+			oldAPIKey = e.APIKey
+			oldSecret = e.SecretKey
+			oldWallet = e.HyperliquidWalletAddr
+			oldAUser = e.AsterUser
+			oldASigner = e.AsterSigner
+			oldAPriv = e.AsterPrivateKey
+			break
+		}
+	}
+
+	triString := func(key, old string) string {
+		v, present := fields[key]
+		if !present { return old }
+		if string(v) == "null" { return "" }
+		var sVal string
+		if json.Unmarshal(v, &sVal) == nil { return sVal }
+		return old
+	}
+	triBool := func(key string, old bool) bool {
+		v, present := fields[key]
+		if !present { return old }
+		var bVal bool
+		if json.Unmarshal(v, &bVal) == nil { return bVal }
+		return old
+	}
+
+	newEnabled := triBool("enabled", oldEnabled)
+	newAPIKey := triString("api_key", oldAPIKey)
+	newSecret := triString("secret_key", oldSecret)
+	newTestnet := triBool("testnet", oldTestnet)
+	newWallet := triString("hyperliquid_wallet_addr", oldWallet)
+	newAUser := triString("aster_user", oldAUser)
+	newASigner := triString("aster_signer", oldASigner)
+	newAPriv := triString("aster_private_key", oldAPriv)
+
+	if err := s.database.UpdateExchange(userID, exchangeID, newEnabled, newAPIKey, newSecret, newTestnet, newWallet, newAUser, newASigner, newAPriv); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("更新交易所 %s 失败: %v", exchangeID, err)})
+		return
+	}
+
+	if err := s.traderManager.LoadUserTraders(s.database, userID); err != nil {
+		log.Printf("⚠️ 重新加载用户交易员到内存失败: %v", err)
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "交易所配置已更新", "id": exchangeID})
 }
 
 // processExchangeUpdate 处理交易所配置更新
@@ -1290,12 +1431,11 @@ func (s *Server) handleGetRSAPublicKey(c *gin.Context) {
 	})
 }
 
-// handleRegister 处理用户注册请求
+// handleRegister 处理用户注册请求（必须使用加密密码）
 func (s *Server) handleRegister(c *gin.Context) {
 	var req struct {
-		Email     string `json:"email" binding:"required,email"`
-		Password  string `json:"password" binding:"required,min=6"`
-		Encrypted bool   `json:"encrypted"` // 密码是否经过RSA加密
+		Email    string `json:"email" binding:"required,email"`
+		Password string `json:"password" binding:"required,min=6"` // 必须是加密后的密码
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1303,20 +1443,16 @@ func (s *Server) handleRegister(c *gin.Context) {
 		return
 	}
 
-	// 如果密码经过RSA加密，先解密
-	password := req.Password
-	if req.Encrypted {
-		decryptedPassword, err := s.database.DecryptRSAData(req.Password)
-		if err != nil {
-			log.Printf("❌ 解密密码失败: %v", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "密码解密失败"})
-			return
-		}
-		password = decryptedPassword
+	// 解密密码（使用智能解密，支持纯RSA和混合加密）
+	password, err := s.database.DecryptRSAData(req.Password)
+	if err != nil {
+		log.Printf("❌ 解密密码失败: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "密码解密失败，请确保使用加密密码"})
+		return
 	}
 
 	// 检查邮箱是否已存在
-	_, err := s.database.GetUserByEmail(req.Email)
+	_, err = s.database.GetUserByEmail(req.Email)
 	if err == nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "邮箱已被注册"})
 		return
@@ -1416,12 +1552,11 @@ func (s *Server) handleCompleteRegistration(c *gin.Context) {
 	})
 }
 
-// handleLogin 处理用户登录请求
+// handleLogin 处理用户登录请求（必须使用加密密码）
 func (s *Server) handleLogin(c *gin.Context) {
 	var req struct {
-		Email     string `json:"email" binding:"required,email"`
-		Password  string `json:"password" binding:"required"`
-		Encrypted bool   `json:"encrypted"` // 密码是否经过RSA加密
+		Email    string `json:"email" binding:"required,email"`
+		Password string `json:"password" binding:"required"` // 必须是加密后的密码
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1429,16 +1564,12 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
-	// 如果密码经过RSA加密，先解密
-	password := req.Password
-	if req.Encrypted {
-		decryptedPassword, err := s.database.DecryptRSAData(req.Password)
-		if err != nil {
-			log.Printf("❌ 解密密码失败: %v", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "密码解密失败"})
-			return
-		}
-		password = decryptedPassword
+	// 解密密码（使用智能解密，支持纯RSA和混合加密）
+	password, err := s.database.DecryptRSAData(req.Password)
+	if err != nil {
+		log.Printf("❌ 解密密码失败: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "密码解密失败，请确保使用加密密码"})
+		return
 	}
 
 	// 获取用户信息
@@ -1554,17 +1685,17 @@ func (s *Server) Start() error {
 	log.Printf("📊 API文档:")
 	log.Printf("  • GET  /api/health           - 健康检查")
 	log.Printf("  • GET  /api/rsa-public-key   - 获取RSA公钥（用于加密敏感数据）")
-	log.Printf("  • POST /api/register          - 用户注册（支持RSA加密密码）")
-	log.Printf("  • POST /api/login             - 用户登录（支持RSA加密密码）")
+	log.Printf("  • POST /api/register          - 用户注册（密码必须加密）")
+	log.Printf("  • POST /api/login             - 用户登录（密码必须加密）")
 	log.Printf("  • GET  /api/traders          - AI交易员列表")
 	log.Printf("  • POST /api/traders          - 创建新的AI交易员")
 	log.Printf("  • DELETE /api/traders/:id    - 删除AI交易员")
 	log.Printf("  • POST /api/traders/:id/start - 启动AI交易员")
 	log.Printf("  • POST /api/traders/:id/stop  - 停止AI交易员")
 	log.Printf("  • GET  /api/models           - 获取AI模型配置")
-	log.Printf("  • PUT  /api/models           - 更新AI模型配置")
+	log.Printf("  • PUT  /api/models           - 更新AI模型配置（数据必须加密）")
 	log.Printf("  • GET  /api/exchanges        - 获取交易所配置")
-	log.Printf("  • PUT  /api/exchanges        - 更新交易所配置")
+	log.Printf("  • PUT  /api/exchanges        - 更新交易所配置（数据必须加密）")
 	log.Printf("  • GET  /api/status?trader_id=xxx     - 指定trader的系统状态")
 	log.Printf("  • GET  /api/account?trader_id=xxx    - 指定trader的账户信息")
 	log.Printf("  • GET  /api/positions?trader_id=xxx  - 指定trader的持仓列表")

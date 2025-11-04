@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { getSystemConfig } from '../lib/config';
-import { encryptData } from '../lib/encryption';
+import RSAEncrypt from '../lib/encryption';
 
 interface User {
   id: string;
@@ -62,7 +62,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = async (email: string, password: string) => {
     try {
       // 加密密码
-      const encryptedPassword = await encryptData(password);
+      const encryptedPassword = await RSAEncrypt.encryptPassword(password);
       
       const response = await fetch('/api/login', {
         method: 'POST',
@@ -72,7 +72,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         body: JSON.stringify({ 
           email, 
           password: encryptedPassword,
-          encrypted: true,
         }),
       });
 
@@ -101,7 +100,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const register = async (email: string, password: string) => {
     try {
       // 加密密码
-      const encryptedPassword = await encryptData(password);
+      const encryptedPassword = await RSAEncrypt.encryptPassword(password);
       
       const response = await fetch('/api/register', {
         method: 'POST',
@@ -111,7 +110,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         body: JSON.stringify({ 
           email, 
           password: encryptedPassword,
-          encrypted: true,
         }),
       });
 

@@ -13,9 +13,9 @@ ARG TA_LIB_VERSION=0.4.0
 # ──────────────────────────────────────────────────────────────
 # TA-Lib Build Stage (shared across builds)
 # ──────────────────────────────────────────────────────────────
-FROM alpine:${ALPINE_VERSION} AS ta-lib-builder
+FROM docker.1ms.run/alpine:${ALPINE_VERSION} AS ta-lib-builder
 ARG TA_LIB_VERSION
-
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories
 RUN apk update && apk add --no-cache \
     wget tar make gcc g++ musl-dev autoconf automake
 
@@ -36,9 +36,11 @@ RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-${TA_LIB_VERSION}-src.
 # ──────────────────────────────────────────────────────────────
 # Backend Build Stage (Go Application)
 # ──────────────────────────────────────────────────────────────
-FROM golang:${GO_VERSION} AS backend-builder
-
+FROM docker.1ms.run/golang:${GO_VERSION} AS backend-builder
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories
 RUN apk update && apk add --no-cache git make gcc g++ musl-dev
+RUN go env -w GO111MODULE=on
+RUN go env -w GOPROXY=https://goproxy.cn,direct
 
 COPY --from=ta-lib-builder /usr/local /usr/local
 
@@ -54,8 +56,8 @@ RUN CGO_ENABLED=1 GOOS=linux \
 # ──────────────────────────────────────────────────────────────
 # Runtime Stage (Minimal Executable Environment)
 # ──────────────────────────────────────────────────────────────
-FROM alpine:${ALPINE_VERSION}
-
+FROM docker.1ms.run/alpine:${ALPINE_VERSION}
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories
 RUN apk update && apk add --no-cache ca-certificates tzdata
 
 COPY --from=ta-lib-builder /usr/local /usr/local

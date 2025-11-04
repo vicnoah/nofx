@@ -1041,10 +1041,12 @@ func (d *Database) GetRSAPrivateKey() (string, error) {
 }
 
 // DecryptRSAData 使用系统私钥解密RSA加密的数据（仅内部使用）
+// 支持纯RSA和混合加密两种格式
 func (d *Database) DecryptRSAData(ciphertextBase64 string) (string, error) {
 	privateKey, err := d.GetRSAPrivateKey()
 	if err != nil {
 		return "", err
 	}
-	return RSADecrypt(privateKey, ciphertextBase64)
+	// 使用智能解密，自动识别加密方式
+	return SmartDecrypt(privateKey, ciphertextBase64)
 }

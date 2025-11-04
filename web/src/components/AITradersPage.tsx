@@ -248,26 +248,20 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
     if (!confirm(t('confirmDeleteModel', language))) return;
 
     try {
-      const updatedModels = allModels?.map(m =>
-        m.id === modelId ? { ...m, apiKey: '', customApiUrl: '', customModelName: '', enabled: false } : m
-      ) || [];
+      // 按条删除：直接更新该条，将enabled设为false，apiKey等清空
+      const modelToDelete = allModels?.find(m => m.id === modelId);
+      if (!modelToDelete) return;
 
-      const request = {
-        models: Object.fromEntries(
-          updatedModels.map(model => [
-            model.provider, // 使用 provider 而不是 id
-            {
-              enabled: model.enabled,
-              api_key: model.apiKey || '',
-              custom_api_url: model.customApiUrl || '',
-              custom_model_name: model.customModelName || ''
-            }
-          ])
-        )
-      };
+      await api.updateModelConfigById(modelToDelete.provider, {
+        enabled: false,
+        api_key: null,
+        custom_api_url: null,
+        custom_model_name: null
+      });
 
-      await api.updateModelConfigs(request);
-      setAllModels(updatedModels);
+      // 重新获取模型配置
+      const refreshedModels = await api.getModelConfigs();
+      setAllModels(refreshedModels);
       setShowModelModal(false);
       setEditingModel(null);
     } catch (error) {
@@ -278,43 +272,21 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
 
   const handleSaveModelConfig = async (modelId: string, apiKey: string, customApiUrl?: string, customModelName?: string) => {
     try {
-      // 创建或更新用户的模型配置
+      // 找到要配置的模型
       const existingModel = allModels?.find(m => m.id === modelId);
-      let updatedModels;
-
-      // 找到要配置的模型（优先从已配置列表，其次从支持列表）
       const modelToUpdate = existingModel || supportedModels?.find(m => m.id === modelId);
       if (!modelToUpdate) {
         alert(t('modelNotExist', language));
         return;
       }
 
-      if (existingModel) {
-        // 更新现有配置
-        updatedModels = allModels?.map(m =>
-          m.id === modelId ? { ...m, apiKey, customApiUrl: customApiUrl || '', customModelName: customModelName || '', enabled: true } : m
-        ) || [];
-      } else {
-        // 添加新配置
-        const newModel = { ...modelToUpdate, apiKey, customApiUrl: customApiUrl || '', customModelName: customModelName || '', enabled: true };
-        updatedModels = [...(allModels || []), newModel];
-      }
-
-      const request = {
-        models: Object.fromEntries(
-          updatedModels.map(model => [
-            model.provider, // 使用 provider 而不是 id
-            {
-              enabled: model.enabled,
-              api_key: model.apiKey || '',
-              custom_api_url: model.customApiUrl || '',
-              custom_model_name: model.customModelName || ''
-            }
-          ])
-        )
-      };
-
-      await api.updateModelConfigs(request);
+      // 按条更新：仅提交当前模型的变更
+      await api.updateModelConfigById(modelToUpdate.provider, {
+        enabled: true,
+        api_key: apiKey,
+        custom_api_url: customApiUrl || null,
+        custom_model_name: customModelName || null
+      });
 
       // 重新获取用户配置以确保数据同步
       const refreshedModels = await api.getModelConfigs();
@@ -332,26 +304,16 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
     if (!confirm(t('confirmDeleteExchange', language))) return;
     
     try {
-      const updatedExchanges = allExchanges?.map(e => 
-        e.id === exchangeId ? { ...e, apiKey: '', secretKey: '', enabled: false } : e
-      ) || [];
-      
-      const request = {
-        exchanges: Object.fromEntries(
-          updatedExchanges.map(exchange => [
-            exchange.id,
-            {
-              enabled: exchange.enabled,
-              api_key: exchange.apiKey || '',
-              secret_key: exchange.secretKey || '',
-              testnet: exchange.testnet || false
-            }
-          ])
-        )
-      };
-      
-      await api.updateExchangeConfigs(request);
-      setAllExchanges(updatedExchanges);
+      // 按条删除：直接更新该条
+      await api.updateExchangeConfigById(exchangeId, {
+        enabled: false,
+        api_key: null,
+        secret_key: null
+      });
+
+      // 重新获取交易所配置
+      const refreshedExchanges = await api.getExchangeConfigs();
+      setAllExchanges(refreshedExchanges);
       setShowExchangeModal(false);
       setEditingExchange(null);
     } catch (error) {
@@ -362,67 +324,24 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
 
   const handleSaveExchangeConfig = async (exchangeId: string, apiKey: string, secretKey?: string, testnet?: boolean, hyperliquidWalletAddr?: string, asterUser?: string, asterSigner?: string, asterPrivateKey?: string) => {
     try {
-      // 找到要配置的交易所（从supportedExchanges中）
+      // 找到要配置的交易所
       const exchangeToUpdate = supportedExchanges?.find(e => e.id === exchangeId);
       if (!exchangeToUpdate) {
         alert(t('exchangeNotExist', language));
         return;
       }
 
-      // 创建或更新用户的交易所配置
-      const existingExchange = allExchanges?.find(e => e.id === exchangeId);
-      let updatedExchanges;
-      
-      if (existingExchange) {
-        // 更新现有配置
-        updatedExchanges = allExchanges?.map(e => 
-          e.id === exchangeId ? { 
-            ...e, 
-            apiKey, 
-            secretKey, 
-            testnet, 
-            hyperliquidWalletAddr, 
-            asterUser, 
-            asterSigner, 
-            asterPrivateKey, 
-            enabled: true 
-          } : e
-        ) || [];
-      } else {
-        // 添加新配置
-        const newExchange = { 
-          ...exchangeToUpdate, 
-          apiKey, 
-          secretKey, 
-          testnet, 
-          hyperliquidWalletAddr, 
-          asterUser, 
-          asterSigner, 
-          asterPrivateKey, 
-          enabled: true 
-        };
-        updatedExchanges = [...(allExchanges || []), newExchange];
-      }
-      
-      const request = {
-        exchanges: Object.fromEntries(
-          updatedExchanges.map(exchange => [
-            exchange.id,
-            {
-              enabled: exchange.enabled,
-              api_key: exchange.apiKey || '',
-              secret_key: exchange.secretKey || '',
-              testnet: exchange.testnet || false,
-              hyperliquid_wallet_addr: exchange.hyperliquidWalletAddr || '',
-              aster_user: exchange.asterUser || '',
-              aster_signer: exchange.asterSigner || '',
-              aster_private_key: exchange.asterPrivateKey || ''
-            }
-          ])
-        )
-      };
-      
-      await api.updateExchangeConfigs(request);
+      // 按条更新：仅提交当前交易所的变更
+      await api.updateExchangeConfigById(exchangeId, {
+        enabled: true,
+        api_key: apiKey,
+        secret_key: secretKey || null,
+        testnet: testnet,
+        hyperliquid_wallet_addr: hyperliquidWalletAddr || null,
+        aster_user: asterUser || null,
+        aster_signer: asterSigner || null,
+        aster_private_key: asterPrivateKey || null
+      });
       
       // 重新获取用户配置以确保数据同步
       const refreshedExchanges = await api.getExchangeConfigs();

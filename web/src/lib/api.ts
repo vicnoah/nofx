@@ -8,8 +8,6 @@ import type {
   AIModel,
   Exchange,
   CreateTraderRequest,
-  UpdateModelConfigRequest,
-  UpdateExchangeConfigRequest,
   CompetitionData,
 } from '../types';
 import { encryptJSON } from './encryption';
@@ -117,20 +115,6 @@ export const api = {
     return res.json();
   },
 
-  async updateModelConfigs(request: UpdateModelConfigRequest): Promise<void> {
-    // 加密整个配置数据
-    const encryptedData = await encryptJSON(request);
-    
-    const res = await fetch(`${API_BASE}/models`, {
-      method: 'PUT',
-      headers: getAuthHeaders(),
-      body: JSON.stringify({
-        data: encryptedData,
-        encrypted: true,
-      }),
-    });
-    if (!res.ok) throw new Error('更新模型配置失败');
-  },
 
   // 交易所配置接口
   async getExchangeConfigs(): Promise<Exchange[]> {
@@ -148,21 +132,28 @@ export const api = {
     return res.json();
   },
 
-  async updateExchangeConfigs(request: UpdateExchangeConfigRequest): Promise<void> {
-    // 加密整个配置数据
-    const encryptedData = await encryptJSON(request);
-    
-    const res = await fetch(`${API_BASE}/exchanges`, {
+
+  async updateModelConfigById(modelId: string, patch: { enabled?: boolean; api_key?: string | null; custom_api_url?: string | null; custom_model_name?: string | null }): Promise<void> {
+    // 加密单条配置数据
+    const encryptedData = await encryptJSON(patch);
+    const res = await fetch(`${API_BASE}/models/${modelId}`, {
       method: 'PUT',
       headers: getAuthHeaders(),
-      body: JSON.stringify({
-        data: encryptedData,
-        encrypted: true,
-      }),
+      body: JSON.stringify({ data: encryptedData, encrypted: true }),
+    });
+    if (!res.ok) throw new Error('更新模型配置失败');
+  },
+
+  async updateExchangeConfigById(exchangeId: string, patch: { enabled?: boolean; api_key?: string | null; secret_key?: string | null; testnet?: boolean; hyperliquid_wallet_addr?: string | null; aster_user?: string | null; aster_signer?: string | null; aster_private_key?: string | null }): Promise<void> {
+    const encryptedData = await encryptJSON(patch);
+    const res = await fetch(`${API_BASE}/exchanges/${exchangeId}`, {
+      method: 'PUT',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ data: encryptedData, encrypted: true }),
     });
     if (!res.ok) throw new Error('更新交易所配置失败');
   },
-
+  
   // 获取系统状态（支持trader_id）
   async getStatus(traderId?: string): Promise<SystemStatus> {
     const url = traderId
