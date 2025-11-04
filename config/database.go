@@ -128,6 +128,14 @@ func (d *Database) createTables() error {
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 
+		// RSA密钥对表
+		`CREATE TABLE IF NOT EXISTS rsa_keys (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			private_key TEXT NOT NULL,
+			public_key TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+
 		// 触发器：自动更新 updated_at
 		`CREATE TRIGGER IF NOT EXISTS update_users_updated_at
 			AFTER UPDATE ON users
@@ -205,6 +213,46 @@ func (d *Database) createTables() error {
 		log.Printf("⚠️ 迁移exchanges表失败: %v", err)
 	}
 
+	// 确保RSA密钥对存在
+	if err = d.ensureRSAKeyPair(); err != nil {
+		log.Printf("⚠️ 初始化RSA密钥对失败: %v", err)
+	}
+
+	return nil
+}
+
+// ensureRSAKeyPair 确保系统RSA密钥对存在，不存在则创建
+func (d *Database) ensureRSAKeyPair() error {
+	// 检查是否已存在密钥对
+	var count int
+	err := d.db.QueryRow(`SELECT COUNT(*) FROM rsa_keys`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("检查RSA密钥对失败: %w", err)
+	}
+
+	// 如果已存在，直接返回
+	if count > 0 {
+		log.Printf("✓ RSA密钥对已存在")
+		return nil
+	}
+
+	// 生成新的RSA密钥对
+	log.Printf("🔐 生成新的RSA密钥对...")
+	keyPair, err := GenerateRSAKeyPair()
+	if err != nil {
+		return fmt.Errorf("生成RSA密钥对失败: %w", err)
+	}
+
+	// 保存到数据库
+	_, err = d.db.Exec(`
+		INSERT INTO rsa_keys (private_key, public_key)
+		VALUES (?, ?)
+	`, keyPair.PrivateKey, keyPair.PublicKey)
+	if err != nil {
+		return fmt.Errorf("保存RSA密钥对失败: %w", err)
+	}
+
+	log.Printf("✅ RSA密钥对生成并保存成功")
 	return nil
 }
 
@@ -970,4 +1018,33 @@ func (d *Database) GetCustomCoins() []string {
 // Close 关闭数据库连接
 func (d *Database) Close() error {
 	return d.db.Close()
+}
+
+// GetRSAPublicKey 获取系统RSA公钥
+func (d *Database) GetRSAPublicKey() (string, error) {
+	var publicKey string
+	err := d.db.QueryRow(`SELECT public_key FROM rsa_keys ORDER BY id DESC LIMIT 1`).Scan(&publicKey)
+	if err != nil {
+		return "", fmt.Errorf("获取RSA公钥失败: %w", err)
+	}
+	return publicKey, nil
+}
+
+// GetRSAPrivateKey 获取系统RSA私钥（仅内部使用）
+func (d *Database) GetRSAPrivateKey() (string, error) {
+	var privateKey string
+	err := d.db.QueryRow(`SELECT private_key FROM rsa_keys ORDER BY id DESC LIMIT 1`).Scan(&privateKey)
+	if err != nil {
+		return "", fmt.Errorf("获取RSA私钥失败: %w", err)
+	}
+	return privateKey, nil
+}
+
+// DecryptRSAData 使用系统私钥解密RSA加密的数据（仅内部使用）
+func (d *Database) DecryptRSAData(ciphertextBase64 string) (string, error) {
+	privateKey, err := d.GetRSAPrivateKey()
+	if err != nil {
+		return "", err
+	}
+	return RSADecrypt(privateKey, ciphertextBase64)
 }

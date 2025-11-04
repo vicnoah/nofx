@@ -12,6 +12,7 @@ import type {
   UpdateExchangeConfigRequest,
   CompetitionData,
 } from '../types';
+import { encryptJSON } from './encryption';
 
 const API_BASE = '/api';
 
@@ -117,10 +118,16 @@ export const api = {
   },
 
   async updateModelConfigs(request: UpdateModelConfigRequest): Promise<void> {
+    // 加密整个配置数据
+    const encryptedData = await encryptJSON(request);
+    
     const res = await fetch(`${API_BASE}/models`, {
       method: 'PUT',
       headers: getAuthHeaders(),
-      body: JSON.stringify(request),
+      body: JSON.stringify({
+        data: encryptedData,
+        encrypted: true,
+      }),
     });
     if (!res.ok) throw new Error('更新模型配置失败');
   },
@@ -142,10 +149,16 @@ export const api = {
   },
 
   async updateExchangeConfigs(request: UpdateExchangeConfigRequest): Promise<void> {
+    // 加密整个配置数据
+    const encryptedData = await encryptJSON(request);
+    
     const res = await fetch(`${API_BASE}/exchanges`, {
       method: 'PUT',
       headers: getAuthHeaders(),
-      body: JSON.stringify(request),
+      body: JSON.stringify({
+        data: encryptedData,
+        encrypted: true,
+      }),
     });
     if (!res.ok) throw new Error('更新交易所配置失败');
   },

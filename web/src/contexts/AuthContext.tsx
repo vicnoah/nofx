@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { getSystemConfig } from '../lib/config';
+import { encryptData } from '../lib/encryption';
 
 interface User {
   id: string;
@@ -60,12 +61,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (email: string, password: string) => {
     try {
+      // 加密密码
+      const encryptedPassword = await encryptData(password);
+      
       const response = await fetch('/api/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ 
+          email, 
+          password: encryptedPassword,
+          encrypted: true,
+        }),
       });
 
       const data = await response.json();
@@ -83,6 +91,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { success: false, message: data.error };
       }
     } catch (error) {
+      console.error('Login error:', error);
       return { success: false, message: '登录失败，请重试' };
     }
 
@@ -91,12 +100,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const register = async (email: string, password: string) => {
     try {
+      // 加密密码
+      const encryptedPassword = await encryptData(password);
+      
       const response = await fetch('/api/register', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ 
+          email, 
+          password: encryptedPassword,
+          encrypted: true,
+        }),
       });
 
       const data = await response.json();
@@ -113,6 +129,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { success: false, message: data.error };
       }
     } catch (error) {
+      console.error('Register error:', error);
       return { success: false, message: '注册失败，请重试' };
     }
   };

@@ -71,20 +71,23 @@ func (s *Server) setupRoutes() {
 	{
 		// 健康检查
 		api.Any("/health", s.handleHealth)
-		
+
 		// 认证相关路由（无需认证）
 		api.POST("/register", s.handleRegister)
 		api.POST("/login", s.handleLogin)
 		api.POST("/verify-otp", s.handleVerifyOTP)
 		api.POST("/complete-registration", s.handleCompleteRegistration)
-		
+
+		// 获取RSA公钥（用于前端加密敏感数据）
+		api.GET("/rsa-public-key", s.handleGetRSAPublicKey)
+
 		// 系统支持的模型和交易所（无需认证）
 		api.GET("/supported-models", s.handleGetSupportedModels)
 		api.GET("/supported-exchanges", s.handleGetSupportedExchanges)
-		
+
 		// 系统配置（无需认证）
 		api.GET("/config", s.handleGetSystemConfig)
-		
+
 		// 系统提示词模板管理（无需认证）
 		api.GET("/prompt-templates", s.handleGetPromptTemplates)
 		api.GET("/prompt-templates/:name", s.handleGetPromptTemplate)
@@ -114,10 +117,9 @@ func (s *Server) setupRoutes() {
 			protected.GET("/user/signal-sources", s.handleGetUserSignalSource)
 			protected.POST("/user/signal-sources", s.handleSaveUserSignalSource)
 
-
 			// 竞赛总览
 			protected.GET("/competition", s.handleCompetition)
-			
+
 			// 指定trader的数据（使用query参数 ?trader_id=xxx）
 			protected.GET("/status", s.handleStatus)
 			protected.GET("/account", s.handleAccount)
@@ -151,24 +153,24 @@ func (s *Server) handleGetSystemConfig(c *gin.Context) {
 		// 使用硬编码的默认币种
 		defaultCoins = []string{"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "HYPEUSDT"}
 	}
-	
+
 	// 获取杠杆配置
 	btcEthLeverageStr, _ := s.database.GetSystemConfig("btc_eth_leverage")
 	altcoinLeverageStr, _ := s.database.GetSystemConfig("altcoin_leverage")
-	
+
 	btcEthLeverage := 5
 	if val, err := strconv.Atoi(btcEthLeverageStr); err == nil && val > 0 {
 		btcEthLeverage = val
 	}
-	
+
 	altcoinLeverage := 5
 	if val, err := strconv.Atoi(altcoinLeverageStr); err == nil && val > 0 {
 		altcoinLeverage = val
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{
-		"admin_mode": auth.IsAdminMode(),
-		"default_coins": defaultCoins,
+		"admin_mode":       auth.IsAdminMode(),
+		"default_coins":    defaultCoins,
 		"btc_eth_leverage": btcEthLeverage,
 		"altcoin_leverage": altcoinLeverage,
 	})
@@ -178,20 +180,20 @@ func (s *Server) handleGetSystemConfig(c *gin.Context) {
 func (s *Server) getTraderFromQuery(c *gin.Context) (*manager.TraderManager, string, error) {
 	userID := c.GetString("user_id")
 	traderID := c.Query("trader_id")
-	
+
 	// 确保用户的交易员已加载到内存中
 	err := s.traderManager.LoadUserTraders(s.database, userID)
 	if err != nil {
 		log.Printf("⚠️ 加载用户 %s 的交易员失败: %v", userID, err)
 	}
-	
+
 	if traderID == "" {
 		// 如果没有指定trader_id，返回该用户的第一个trader
 		ids := s.traderManager.GetTraderIDs()
 		if len(ids) == 0 {
 			return nil, "", fmt.Errorf("没有可用的trader")
 		}
-		
+
 		// 获取用户的交易员列表，优先返回用户自己的交易员
 		userTraders, err := s.database.GetTraders(userID)
 		if err == nil && len(userTraders) > 0 {
@@ -200,7 +202,7 @@ func (s *Server) getTraderFromQuery(c *gin.Context) (*manager.TraderManager, str
 			traderID = ids[0]
 		}
 	}
-	
+
 	return s.traderManager, traderID, nil
 }
 
@@ -248,6 +250,7 @@ type UpdateModelConfigRequest struct {
 		CustomAPIURL    string `json:"custom_api_url"`
 		CustomModelName string `json:"custom_model_name"`
 	} `json:"models"`
+	Encrypted bool `json:"encrypted"` // 整体请求是否经过RSA加密
 }
 
 type UpdateExchangeConfigRequest struct {
@@ -261,6 +264,7 @@ type UpdateExchangeConfigRequest struct {
 		AsterSigner           string `json:"aster_signer"`
 		AsterPrivateKey       string `json:"aster_private_key"`
 	} `json:"exchanges"`
+	Encrypted bool `json:"encrypted"` // 整体请求是否经过RSA加密
 }
 
 // handleCreateTrader 创建新的AI交易员
@@ -296,13 +300,13 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 
 	// 生成交易员ID
 	traderID := fmt.Sprintf("%s_%s_%d", req.ExchangeID, req.AIModelID, time.Now().Unix())
-	
+
 	// 设置默认值
 	isCrossMargin := true // 默认为全仓模式
 	if req.IsCrossMargin != nil {
 		isCrossMargin = *req.IsCrossMargin
 	}
-	
+
 	// 设置杠杆默认值（从系统配置获取）
 	btcEthLeverage := 5
 	altcoinLeverage := 5
@@ -326,7 +330,7 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 			}
 		}
 	}
-	
+
 	// 设置系统提示词模板默认值
 	systemPromptTemplate := "default"
 	if req.SystemPromptTemplate != "" {
@@ -339,8 +343,8 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		scanIntervalMinutes = 3 // 默认3分钟
 	}
 
-    // 创建交易员配置（数据库实体）
-    trader := &config.TraderRecord{
+	// 创建交易员配置（数据库实体）
+	trader := &config.TraderRecord{
 		ID:                   traderID,
 		UserID:               userID,
 		Name:                 req.Name,
@@ -357,7 +361,7 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		SystemPromptTemplate: systemPromptTemplate,
 		IsCrossMargin:        isCrossMargin,
 		ScanIntervalMinutes:  scanIntervalMinutes,
-		IsRunning:           false,
+		IsRunning:            false,
 	}
 
 	// 保存到数据库
@@ -386,24 +390,24 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 
 // UpdateTraderRequest 更新交易员请求
 type UpdateTraderRequest struct {
-	Name                 string  `json:"name" binding:"required"`
-	AIModelID            string  `json:"ai_model_id" binding:"required"`
-	ExchangeID           string  `json:"exchange_id" binding:"required"`
-	InitialBalance       float64 `json:"initial_balance"`
-	ScanIntervalMinutes  int     `json:"scan_interval_minutes"`
-	BTCETHLeverage       int     `json:"btc_eth_leverage"`
-	AltcoinLeverage      int     `json:"altcoin_leverage"`
-	TradingSymbols     string `json:"trading_symbols"`
-	CustomPrompt       string `json:"custom_prompt"`
-	OverrideBasePrompt bool   `json:"override_base_prompt"`
-	IsCrossMargin      *bool  `json:"is_cross_margin"`
+	Name                string  `json:"name" binding:"required"`
+	AIModelID           string  `json:"ai_model_id" binding:"required"`
+	ExchangeID          string  `json:"exchange_id" binding:"required"`
+	InitialBalance      float64 `json:"initial_balance"`
+	ScanIntervalMinutes int     `json:"scan_interval_minutes"`
+	BTCETHLeverage      int     `json:"btc_eth_leverage"`
+	AltcoinLeverage     int     `json:"altcoin_leverage"`
+	TradingSymbols      string  `json:"trading_symbols"`
+	CustomPrompt        string  `json:"custom_prompt"`
+	OverrideBasePrompt  bool    `json:"override_base_prompt"`
+	IsCrossMargin       *bool   `json:"is_cross_margin"`
 }
 
 // handleUpdateTrader 更新交易员配置
 func (s *Server) handleUpdateTrader(c *gin.Context) {
 	userID := c.GetString("user_id")
 	traderID := c.Param("id")
-	
+
 	var req UpdateTraderRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -416,7 +420,7 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取交易员列表失败"})
 		return
 	}
-	
+
 	var existingTrader *config.TraderRecord
 	for _, trader := range traders {
 		if trader.ID == traderID {
@@ -424,7 +428,7 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 			break
 		}
 	}
-	
+
 	if existingTrader == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
 		return
@@ -435,7 +439,7 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 	if req.IsCrossMargin != nil {
 		isCrossMargin = *req.IsCrossMargin
 	}
-	
+
 	// 设置杠杆默认值
 	btcEthLeverage := req.BTCETHLeverage
 	altcoinLeverage := req.AltcoinLeverage
@@ -452,8 +456,8 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		scanIntervalMinutes = existingTrader.ScanIntervalMinutes // 保持原值
 	}
 
-    // 更新交易员配置
-    trader := &config.TraderRecord{
+	// 更新交易员配置
+	trader := &config.TraderRecord{
 		ID:                   traderID,
 		UserID:               userID,
 		Name:                 req.Name,
@@ -498,14 +502,14 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 func (s *Server) handleDeleteTrader(c *gin.Context) {
 	userID := c.GetString("user_id")
 	traderID := c.Param("id")
-	
+
 	// 从数据库删除
 	err := s.database.DeleteTrader(userID, traderID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("删除交易员失败: %v", err)})
 		return
 	}
-	
+
 	// 如果交易员正在运行，先停止它
 	if trader, err := s.traderManager.GetTrader(traderID); err == nil {
 		status := trader.GetStatus()
@@ -514,7 +518,7 @@ func (s *Server) handleDeleteTrader(c *gin.Context) {
 			log.Printf("⏹  已停止运行中的交易员: %s", traderID)
 		}
 	}
-	
+
 	log.Printf("✓ 交易员已删除: %s", traderID)
 	c.JSON(http.StatusOK, gin.H{"message": "交易员已删除"})
 }
@@ -522,20 +526,20 @@ func (s *Server) handleDeleteTrader(c *gin.Context) {
 // handleStartTrader 启动交易员
 func (s *Server) handleStartTrader(c *gin.Context) {
 	traderID := c.Param("id")
-	
+
 	trader, err := s.traderManager.GetTrader(traderID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
 		return
 	}
-	
+
 	// 检查交易员是否已经在运行
 	status := trader.GetStatus()
 	if isRunning, ok := status["is_running"].(bool); ok && isRunning {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "交易员已在运行中"})
 		return
 	}
-	
+
 	// 启动交易员
 	go func() {
 		log.Printf("▶️  启动交易员 %s (%s)", traderID, trader.GetName())
@@ -543,14 +547,14 @@ func (s *Server) handleStartTrader(c *gin.Context) {
 			log.Printf("❌ 交易员 %s 运行错误: %v", trader.GetName(), err)
 		}
 	}()
-	
+
 	// 更新数据库中的运行状态
 	userID := c.GetString("user_id")
 	err = s.database.UpdateTraderStatus(userID, traderID, true)
 	if err != nil {
 		log.Printf("⚠️  更新交易员状态失败: %v", err)
 	}
-	
+
 	log.Printf("✓ 交易员 %s 已启动", trader.GetName())
 	c.JSON(http.StatusOK, gin.H{"message": "交易员已启动"})
 }
@@ -558,30 +562,30 @@ func (s *Server) handleStartTrader(c *gin.Context) {
 // handleStopTrader 停止交易员
 func (s *Server) handleStopTrader(c *gin.Context) {
 	traderID := c.Param("id")
-	
+
 	trader, err := s.traderManager.GetTrader(traderID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
 		return
 	}
-	
+
 	// 检查交易员是否正在运行
 	status := trader.GetStatus()
 	if isRunning, ok := status["is_running"].(bool); ok && !isRunning {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "交易员已停止"})
 		return
 	}
-	
+
 	// 停止交易员
 	trader.Stop()
-	
+
 	// 更新数据库中的运行状态
 	userID := c.GetString("user_id")
 	err = s.database.UpdateTraderStatus(userID, traderID, false)
 	if err != nil {
 		log.Printf("⚠️  更新交易员状态失败: %v", err)
 	}
-	
+
 	log.Printf("⏹  交易员 %s 已停止", trader.GetName())
 	c.JSON(http.StatusOK, gin.H{"message": "交易员已停止"})
 }
@@ -590,24 +594,24 @@ func (s *Server) handleStopTrader(c *gin.Context) {
 func (s *Server) handleUpdateTraderPrompt(c *gin.Context) {
 	traderID := c.Param("id")
 	userID := c.GetString("user_id")
-	
+
 	var req struct {
-		CustomPrompt string `json:"custom_prompt"`
-		OverrideBasePrompt bool `json:"override_base_prompt"`
+		CustomPrompt       string `json:"custom_prompt"`
+		OverrideBasePrompt bool   `json:"override_base_prompt"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	
+
 	// 更新数据库
 	err := s.database.UpdateTraderCustomPrompt(userID, traderID, req.CustomPrompt, req.OverrideBasePrompt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("更新自定义prompt失败: %v", err)})
 		return
 	}
-	
+
 	// 如果trader在内存中，更新其custom prompt和override设置
 	trader, err := s.traderManager.GetTrader(traderID)
 	if err == nil {
@@ -615,7 +619,7 @@ func (s *Server) handleUpdateTraderPrompt(c *gin.Context) {
 		trader.SetOverrideBasePrompt(req.OverrideBasePrompt)
 		log.Printf("✓ 已更新交易员 %s 的自定义prompt (覆盖基础=%v)", trader.GetName(), req.OverrideBasePrompt)
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{"message": "自定义prompt已更新"})
 }
 
@@ -630,19 +634,63 @@ func (s *Server) handleGetModelConfigs(c *gin.Context) {
 		return
 	}
 	log.Printf("✅ 找到 %d 个AI模型配置", len(models))
-	
+
 	c.JSON(http.StatusOK, models)
 }
 
 // handleUpdateModelConfigs 更新AI模型配置
 func (s *Server) handleUpdateModelConfigs(c *gin.Context) {
 	userID := c.GetString("user_id")
-	var req UpdateModelConfigRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+
+	// 先读取原始请求体
+	type EncryptedRequest struct {
+		Data      string `json:"data"`      // RSA加密后的数据（或原始JSON字符串）
+		Encrypted bool   `json:"encrypted"` // 是否加密
+	}
+
+	var encReq EncryptedRequest
+	if err := c.ShouldBindJSON(&encReq); err != nil {
+		// 如果无法解析为加密格式，尝试直接解析为非加密请求（向后兼容）
+		var req UpdateModelConfigRequest
+		if err2 := c.ShouldBindJSON(&req); err2 != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err2.Error()})
+			return
+		}
+		// 直接处理非加密请求
+		s.processModelUpdate(c, userID, &req)
 		return
 	}
 
+	// 如果标记为加密，先解密
+	var req UpdateModelConfigRequest
+	if encReq.Encrypted {
+		// 使用RSA解密
+		decryptedJSON, err := s.database.DecryptRSAData(encReq.Data)
+		if err != nil {
+			log.Printf("❌ 解密AI模型配置失败: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "解密请求数据失败"})
+			return
+		}
+
+		// 解析JSON
+		if err := json.Unmarshal([]byte(decryptedJSON), &req); err != nil {
+			log.Printf("❌ 解析解密后的JSON失败: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "解析请求数据失败"})
+			return
+		}
+	} else {
+		// 未加密，直接解析data字段
+		if err := json.Unmarshal([]byte(encReq.Data), &req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	s.processModelUpdate(c, userID, &req)
+}
+
+// processModelUpdate 处理AI模型配置更新
+func (s *Server) processModelUpdate(c *gin.Context, userID string, req *UpdateModelConfigRequest) {
 	// 更新每个模型的配置
 	for modelID, modelData := range req.Models {
 		err := s.database.UpdateAIModel(userID, modelID, modelData.Enabled, modelData.APIKey, modelData.CustomAPIURL, modelData.CustomModelName)
@@ -659,7 +707,7 @@ func (s *Server) handleUpdateModelConfigs(c *gin.Context) {
 		// 这里不返回错误，因为模型配置已经成功更新到数据库
 	}
 
-	log.Printf("✓ AI模型配置已更新: %+v", req.Models)
+	log.Printf("✓ AI模型配置已更新: %d个模型", len(req.Models))
 	c.JSON(http.StatusOK, gin.H{"message": "模型配置已更新"})
 }
 
@@ -674,22 +722,77 @@ func (s *Server) handleGetExchangeConfigs(c *gin.Context) {
 		return
 	}
 	log.Printf("✅ 找到 %d 个交易所配置", len(exchanges))
-	
+
 	c.JSON(http.StatusOK, exchanges)
 }
 
 // handleUpdateExchangeConfigs 更新交易所配置
 func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 	userID := c.GetString("user_id")
-	var req UpdateExchangeConfigRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+
+	// 先读取原始请求体
+	type EncryptedRequest struct {
+		Data      string `json:"data"`      // RSA加密后的数据（或原始JSON字符串）
+		Encrypted bool   `json:"encrypted"` // 是否加密
+	}
+
+	var encReq EncryptedRequest
+	if err := c.ShouldBindJSON(&encReq); err != nil {
+		// 如果无法解析为加密格式，尝试直接解析为非加密请求（向后兼容）
+		var req UpdateExchangeConfigRequest
+		if err2 := c.ShouldBindJSON(&req); err2 != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err2.Error()})
+			return
+		}
+		// 直接处理非加密请求
+		s.processExchangeUpdate(c, userID, &req)
 		return
 	}
 
+	// 如果标记为加密，先解密
+	var req UpdateExchangeConfigRequest
+	if encReq.Encrypted {
+		// 使用RSA解密
+		decryptedJSON, err := s.database.DecryptRSAData(encReq.Data)
+		if err != nil {
+			log.Printf("❌ 解密交易所配置失败: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "解密请求数据失败"})
+			return
+		}
+
+		// 解析JSON
+		if err := json.Unmarshal([]byte(decryptedJSON), &req); err != nil {
+			log.Printf("❌ 解析解密后的JSON失败: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "解析请求数据失败"})
+			return
+		}
+	} else {
+		// 未加密，直接解析data字段
+		if err := json.Unmarshal([]byte(encReq.Data), &req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	s.processExchangeUpdate(c, userID, &req)
+}
+
+// processExchangeUpdate 处理交易所配置更新
+func (s *Server) processExchangeUpdate(c *gin.Context, userID string, req *UpdateExchangeConfigRequest) {
 	// 更新每个交易所的配置
 	for exchangeID, exchangeData := range req.Exchanges {
-		err := s.database.UpdateExchange(userID, exchangeID, exchangeData.Enabled, exchangeData.APIKey, exchangeData.SecretKey, exchangeData.Testnet, exchangeData.HyperliquidWalletAddr, exchangeData.AsterUser, exchangeData.AsterSigner, exchangeData.AsterPrivateKey)
+		err := s.database.UpdateExchange(
+			userID,
+			exchangeID,
+			exchangeData.Enabled,
+			exchangeData.APIKey,
+			exchangeData.SecretKey,
+			exchangeData.Testnet,
+			exchangeData.HyperliquidWalletAddr,
+			exchangeData.AsterUser,
+			exchangeData.AsterSigner,
+			exchangeData.AsterPrivateKey,
+		)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("更新交易所 %s 失败: %v", exchangeID, err)})
 			return
@@ -703,7 +806,7 @@ func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 		// 这里不返回错误，因为交易所配置已经成功更新到数据库
 	}
 
-	log.Printf("✓ 交易所配置已更新: %+v", req.Exchanges)
+	log.Printf("✓ 交易所配置已更新: %d个交易所", len(req.Exchanges))
 	c.JSON(http.StatusOK, gin.H{"message": "交易所配置已更新"})
 }
 
@@ -719,7 +822,7 @@ func (s *Server) handleGetUserSignalSource(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"coin_pool_url": source.CoinPoolURL,
 		"oi_top_url":    source.OITopURL,
@@ -733,18 +836,18 @@ func (s *Server) handleSaveUserSignalSource(c *gin.Context) {
 		CoinPoolURL string `json:"coin_pool_url"`
 		OITopURL    string `json:"oi_top_url"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	
+
 	err := s.database.CreateUserSignalSource(userID, req.CoinPoolURL, req.OITopURL)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("保存用户信号源配置失败: %v", err)})
 		return
 	}
-	
+
 	log.Printf("✓ 用户信号源配置已保存: user=%s, coin_pool=%s, oi_top=%s", userID, req.CoinPoolURL, req.OITopURL)
 	c.JSON(http.StatusOK, gin.H{"message": "用户信号源配置已保存"})
 }
@@ -820,21 +923,21 @@ func (s *Server) handleGetTraderConfig(c *gin.Context) {
 	aiModelID := traderConfig.AIModelID
 
 	result := map[string]interface{}{
-		"trader_id":              traderConfig.ID,
-		"trader_name":            traderConfig.Name,
-		"ai_model":               aiModelID,
-		"exchange_id":            traderConfig.ExchangeID,
-		"initial_balance":        traderConfig.InitialBalance,
-		"scan_interval_minutes":  traderConfig.ScanIntervalMinutes,
-		"btc_eth_leverage":       traderConfig.BTCETHLeverage,
-		"altcoin_leverage":       traderConfig.AltcoinLeverage,
-		"trading_symbols":        traderConfig.TradingSymbols,
-		"custom_prompt":          traderConfig.CustomPrompt,
-		"override_base_prompt":   traderConfig.OverrideBasePrompt,
-		"is_cross_margin":        traderConfig.IsCrossMargin,
-		"use_coin_pool":          traderConfig.UseCoinPool,
-		"use_oi_top":             traderConfig.UseOITop,
-		"is_running":             isRunning,
+		"trader_id":             traderConfig.ID,
+		"trader_name":           traderConfig.Name,
+		"ai_model":              aiModelID,
+		"exchange_id":           traderConfig.ExchangeID,
+		"initial_balance":       traderConfig.InitialBalance,
+		"scan_interval_minutes": traderConfig.ScanIntervalMinutes,
+		"btc_eth_leverage":      traderConfig.BTCETHLeverage,
+		"altcoin_leverage":      traderConfig.AltcoinLeverage,
+		"trading_symbols":       traderConfig.TradingSymbols,
+		"custom_prompt":         traderConfig.CustomPrompt,
+		"override_base_prompt":  traderConfig.OverrideBasePrompt,
+		"is_cross_margin":       traderConfig.IsCrossMargin,
+		"use_coin_pool":         traderConfig.UseCoinPool,
+		"use_oi_top":            traderConfig.UseOITop,
+		"is_running":            isRunning,
 	}
 
 	c.JSON(http.StatusOK, result)
@@ -1001,13 +1104,13 @@ func (s *Server) handleStatistics(c *gin.Context) {
 // handleCompetition 竞赛总览（对比所有trader）
 func (s *Server) handleCompetition(c *gin.Context) {
 	userID := c.GetString("user_id")
-	
+
 	// 确保用户的交易员已加载到内存中
 	err := s.traderManager.LoadUserTraders(s.database, userID)
 	if err != nil {
 		log.Printf("⚠️ 加载用户 %s 的交易员失败: %v", userID, err)
 	}
-	
+
 	competition, err := s.traderManager.GetCompetitionData()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -1015,7 +1118,7 @@ func (s *Server) handleCompetition(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, competition)
 }
 
@@ -1142,7 +1245,7 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		
+
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "缺少Authorization头"})
@@ -1173,16 +1276,43 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 	}
 }
 
+// handleGetRSAPublicKey 获取RSA公钥（用于前端加密敏感数据）
+func (s *Server) handleGetRSAPublicKey(c *gin.Context) {
+	publicKey, err := s.database.GetRSAPublicKey()
+	if err != nil {
+		log.Printf("❌ 获取RSA公钥失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取RSA公钥失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"public_key": publicKey,
+	})
+}
+
 // handleRegister 处理用户注册请求
 func (s *Server) handleRegister(c *gin.Context) {
 	var req struct {
-		Email    string `json:"email" binding:"required,email"`
-		Password string `json:"password" binding:"required,min=6"`
+		Email     string `json:"email" binding:"required,email"`
+		Password  string `json:"password" binding:"required,min=6"`
+		Encrypted bool   `json:"encrypted"` // 密码是否经过RSA加密
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	// 如果密码经过RSA加密，先解密
+	password := req.Password
+	if req.Encrypted {
+		decryptedPassword, err := s.database.DecryptRSAData(req.Password)
+		if err != nil {
+			log.Printf("❌ 解密密码失败: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "密码解密失败"})
+			return
+		}
+		password = decryptedPassword
 	}
 
 	// 检查邮箱是否已存在
@@ -1193,7 +1323,7 @@ func (s *Server) handleRegister(c *gin.Context) {
 	}
 
 	// 生成密码哈希
-	passwordHash, err := auth.HashPassword(req.Password)
+	passwordHash, err := auth.HashPassword(password)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "密码处理失败"})
 		return
@@ -1225,11 +1355,11 @@ func (s *Server) handleRegister(c *gin.Context) {
 	// 返回OTP设置信息
 	qrCodeURL := auth.GetOTPQRCodeURL(otpSecret, req.Email)
 	c.JSON(http.StatusOK, gin.H{
-		"user_id":    userID,
-		"email":      req.Email,
-		"otp_secret": otpSecret,
+		"user_id":     userID,
+		"email":       req.Email,
+		"otp_secret":  otpSecret,
 		"qr_code_url": qrCodeURL,
-		"message":    "请使用Google Authenticator扫描二维码并验证OTP",
+		"message":     "请使用Google Authenticator扫描二维码并验证OTP",
 	})
 }
 
@@ -1289,13 +1419,26 @@ func (s *Server) handleCompleteRegistration(c *gin.Context) {
 // handleLogin 处理用户登录请求
 func (s *Server) handleLogin(c *gin.Context) {
 	var req struct {
-		Email    string `json:"email" binding:"required,email"`
-		Password string `json:"password" binding:"required"`
+		Email     string `json:"email" binding:"required,email"`
+		Password  string `json:"password" binding:"required"`
+		Encrypted bool   `json:"encrypted"` // 密码是否经过RSA加密
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	// 如果密码经过RSA加密，先解密
+	password := req.Password
+	if req.Encrypted {
+		decryptedPassword, err := s.database.DecryptRSAData(req.Password)
+		if err != nil {
+			log.Printf("❌ 解密密码失败: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "密码解密失败"})
+			return
+		}
+		password = decryptedPassword
 	}
 
 	// 获取用户信息
@@ -1306,7 +1449,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 	}
 
 	// 验证密码
-	if !auth.CheckPassword(req.Password, user.PasswordHash) {
+	if !auth.CheckPassword(password, user.PasswordHash) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "邮箱或密码错误"})
 		return
 	}
@@ -1314,8 +1457,8 @@ func (s *Server) handleLogin(c *gin.Context) {
 	// 检查OTP是否已验证
 	if !user.OTPVerified {
 		c.JSON(http.StatusUnauthorized, gin.H{
-			"error": "账户未完成OTP设置",
-			"user_id": user.ID,
+			"error":              "账户未完成OTP设置",
+			"user_id":            user.ID,
 			"requires_otp_setup": true,
 		})
 		return
@@ -1323,9 +1466,9 @@ func (s *Server) handleLogin(c *gin.Context) {
 
 	// 返回需要OTP验证的状态
 	c.JSON(http.StatusOK, gin.H{
-		"user_id": user.ID,
-		"email":   user.Email,
-		"message": "请输入Google Authenticator验证码",
+		"user_id":      user.ID,
+		"email":        user.Email,
+		"message":      "请输入Google Authenticator验证码",
 		"requires_otp": true,
 	})
 }
@@ -1387,7 +1530,7 @@ func (s *Server) handleGetSupportedModels(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取支持的AI模型失败"})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, models)
 }
 
@@ -1400,7 +1543,7 @@ func (s *Server) handleGetSupportedExchanges(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取支持的交易所失败"})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, exchanges)
 }
 
@@ -1410,6 +1553,9 @@ func (s *Server) Start() error {
 	log.Printf("🌐 API服务器启动在 http://localhost%s", addr)
 	log.Printf("📊 API文档:")
 	log.Printf("  • GET  /api/health           - 健康检查")
+	log.Printf("  • GET  /api/rsa-public-key   - 获取RSA公钥（用于加密敏感数据）")
+	log.Printf("  • POST /api/register          - 用户注册（支持RSA加密密码）")
+	log.Printf("  • POST /api/login             - 用户登录（支持RSA加密密码）")
 	log.Printf("  • GET  /api/traders          - AI交易员列表")
 	log.Printf("  • POST /api/traders          - 创建新的AI交易员")
 	log.Printf("  • DELETE /api/traders/:id    - 删除AI交易员")
@@ -1436,7 +1582,7 @@ func (s *Server) Start() error {
 func (s *Server) handleGetPromptTemplates(c *gin.Context) {
 	// 导入 decision 包
 	templates := decision.GetAllPromptTemplates()
-	
+
 	// 转换为响应格式
 	response := make([]map[string]interface{}, 0, len(templates))
 	for _, tmpl := range templates {
@@ -1444,7 +1590,7 @@ func (s *Server) handleGetPromptTemplates(c *gin.Context) {
 			"name": tmpl.Name,
 		})
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"templates": response,
 	})
@@ -1453,13 +1599,13 @@ func (s *Server) handleGetPromptTemplates(c *gin.Context) {
 // handleGetPromptTemplate 获取指定名称的提示词模板内容
 func (s *Server) handleGetPromptTemplate(c *gin.Context) {
 	templateName := c.Param("name")
-	
+
 	template, err := decision.GetPromptTemplate(templateName)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("模板不存在: %s", templateName)})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"name":    template.Name,
 		"content": template.Content,
